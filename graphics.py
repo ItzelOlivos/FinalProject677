@@ -13,13 +13,15 @@ from agents import *
 PRED_RAD = 10
 PRED_TRANS = .9
 PRED_PN = 5
-PRED_ON = 10
 PRED_MAX_VEL = 1
 
 # ======== Agent properties ===========
 NUM_AGENTS = 30
 AGENT_WIDTH = 5
 AGENT_MAX_VEL = 1
+SENSOR_VAR = 10
+INIT_GUESS = np.array([0, 0])
+ROUNDS = 10
 
 R = 100
 D = 20
@@ -112,34 +114,60 @@ def getNeighbors(i):
     agents[i].neighbors = res
 
 
-def findPredator(i):
-    # Change this line for an estimate:
-    estimated_pos = predator.pos
-
-    if np.linalg.norm(estimated_pos - agents[i].pos) < DO:
-        agents[i].obstacle = estimated_pos
-    else:
-        agents[i].obstacle = None
+def findPredator(i, obs):
+    if np.linalg.norm(predator.pos - agents[i].pos) < DO:
+        # Only agents within the range receive an observation
+        estimated_pos = (A - B.dot(L[i]) - K[i].dot(A) + K[i].dot(B.dot(L[i]))).dot(agents[i].estimate) + K[i].dot(obs)
+        agents[i].estimate = estimated_pos
+        if np.linalg.norm(agents[i].estimate - agents[i].pos) < DO:
+            agents[i].obstacle = agents[i].estimate
+        else:
+            agents[i].obstacle = None
 
 
 # ============= Main code =============
 
 init_pos = np.asarray([380, 380])
-object_pos = np.asarray([400, 400])
+pred_pos0 = np.asarray([400, 400])
 target_pos0 = np.asarray([-400, 400])
 
 [fig, ax] = preparing_workspace()
 plt.ion()
 plt.show()
 
-agents = [Agent(idx, init_pos + AGENT_WIDTH * np.random.randn(), np.random.randn(), AGENT_MAX_VEL) for idx in
-          range(NUM_AGENTS)]
-predator = Predator(object_pos, PRED_TRANS * np.eye(2), PRED_PN, PRED_ON)
+# Predator's cost function
+Qx = np.array([[.001, 0], [0, .001]])
+Qu = np.array([[1, 0], [0, 1]])
+QT = np.array([[0.0001, 0], [0, 0.0001]])
+
+# Predator's control:
+S = np.zeros([TIME_STEPS+1, 2, 2])
+L = np.zeros([TIME_STEPS+1, 2, 2])
+S[TIME_STEPS] = QT
+A = PRED_TRANS * np.eye(2)
+B = np.eye(2)
+for k in range(TIME_STEPS-1, -1, -1):
+    S[k] = A.T.dot(S[k+1] - S[k+1].dot(B).dot(np.linalg.inv(B.T.dot(S[k+1].dot(B)) + Qu).dot(B.T).dot(S[k+1]))).dot(A) + Qx
+    L[k] = np.linalg.inv(B.T.dot(S[k+1].dot(B)) + Qu).dot(B.T.dot(S[k+1].dot(A)))
+
+# Agents' estimator error covariance
+PN = PRED_PN * np.eye(2)
+SN = SENSOR_VAR * np.eye(2)
+
+P = np.zeros([TIME_STEPS + 1, 2, 2])
+K = np.zeros([TIME_STEPS, 2, 2])
+P[0] = SENSOR_VAR
+for k in range(TIME_STEPS):
+    P[k+1] = A.dot(P[k] - P[k].dot(np.linalg.inv(P[k] + SN).dot(S[k]))).dot(A.T) + PN
+    K[k] = P[k].dot(np.linalg.inv(P[k] + SN))
+
+agents = [Agent(idx, init_pos + AGENT_WIDTH * np.random.randn(), np.random.randn(), AGENT_MAX_VEL, INIT_GUESS) for idx in range(NUM_AGENTS)]
+predator = Predator(pred_pos0, A, PRED_PN, SENSOR_VAR)
 target = Target(target_pos0)
 
 for i in range(NUM_AGENTS):
     getNeighbors(i)
-    findPredator(i)
+    findPredator(i, pred_pos0)
 
 actions = [np.zeros(2) for _ in range(NUM_AGENTS)]
 for t in range(TIME_STEPS):
@@ -148,29 +176,40 @@ for t in range(TIME_STEPS):
     for i in range(NUM_AGENTS):
         agents[i].step(actions[i])
 
-    obs = predator.step(np.array([PRED_MAX_VEL, PRED_MAX_VEL]))
+    obs = predator.step(-L[k].dot(predator.pos))
     target.step(np.array([TARGET_MAX_VEL, -TARGET_MAX_VEL]), BKG_SCALE)
 
     actions = []
     for i in range(NUM_AGENTS):
         getNeighbors(i)
-        findPredator(i)
+        findPredator(i, obs)
 
         fg = C1 * sum([phiFunc(j, i) * (agents[j].pos - agents[i].pos) / np.sqrt(
             1 + E * np.linalg.norm(agents[j].pos - agents[i].pos) ** 2) + bumpfunc(
             signorm(agents[j].pos - agents[i].pos) / signorm(R)) * (agents[j].vel - agents[i].vel) for j in
                        agents[i].neighbors])
 
-        fo = C3 * sum([phiFuncBeta(agents[i].obstacle, i) * (agents[i].obstacle - agents[i].pos) / np.sqrt(1 + E * np.linalg.norm(agents[i].obstacle - agents[i].pos) ** 2) + bumpfunc(signorm(agents[i].obstacle - agents[i].pos) / signorm(DO)) * (PRED_MAX_VEL - agents[i].vel) if agents[i].obstacle is not None else 0])
+        fo = C3 * sum([phiFuncBeta(agents[i].obstacle, i) * (agents[i].obstacle - agents[i].pos) / np.sqrt(
+            1 + E * np.linalg.norm(agents[i].obstacle - agents[i].pos) ** 2) + bumpfunc(
+            signorm(agents[i].obstacle - agents[i].pos) / signorm(DO)) * (PRED_MAX_VEL - agents[i].vel) if agents[i].obstacle is not None else 0])
+        # fo = C3 * sum([bumpfunc(signorm(agents[i].obstacle - agents[i].pos) / signorm(DO)) * (PRED_MAX_VEL - agents[i].vel) if agents[i].obstacle is not None else 0])
 
         fd = C2 * sum(
             [bumpfunc(signorm(agents[j].pos - agents[i].pos) / signorm(R)) * (agents[j].vel - agents[i].vel) for j in
              agents[i].neighbors])
 
-        # fo = C3 * sum([bumpfunc(signorm(agents[i].obstacle - agents[i].pos) / signorm(DO)) * (PRED_MAX_VEL - agents[i].vel) if agents[i].obstacle is not None else 0])
-
         ft = - C1T * (agents[i].pos - target.pos) - C2T * (TARGET_MAX_VEL - agents[i].vel)
 
         actions.append(fg + fo + fd + ft)
+
+    for _ in range(ROUNDS):
+        Collective = []
+        for i in range(NUM_AGENTS):
+            # Who is storing the matrix of weights
+            # Collective.append(np.sum([COMM[i, j] * agents[j].estimate for j in range(NUM_AGENTS)], axis=0))
+            Collective.append(np.sum([(1/NUM_AGENTS) * agents[j].estimate for j in range(NUM_AGENTS)], axis=0))
+
+        for i in range(NUM_AGENTS):
+            agents[i].estimate = Collective[i]
 
     plt.pause(0.1)

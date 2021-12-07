@@ -1,13 +1,14 @@
 import numpy as np
 
 class Agent:
-    def __init__(self, id, pos0, vel0, max_speed):
+    def __init__(self, id, pos0, vel0, max_speed, init_guess):
         self.id = id
         self.pos = pos0
         self.vel = vel0
         self.neighbors = []
         self.obstacle = None
         self.max_speed = max_speed
+        self.estimate = init_guess
 
     def step(self, u):
         self.vel += u
