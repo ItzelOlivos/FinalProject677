@@ -25,12 +25,11 @@ class Predator:
     def __init__(self, pos0, A, sig_p, sig_z):
         self.pos = pos0
         self.A = A
-        self.proc_std = sig_p
-        self.obs_std = sig_z
+        self.proc_std = np.sqrt(sig_p)
+        self.obs_std = np.sqrt(sig_z)
 
     def step(self, u):
         self.pos = self.A.dot(self.pos) + u + self.proc_std * np.random.randn(2)
-        # self.pos = np.mod(self.pos + u, top)
         return self.pos + self.obs_std * np.random.randn(2)
 
 

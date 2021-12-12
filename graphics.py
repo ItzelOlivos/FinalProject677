@@ -11,17 +11,18 @@ from agents import *
 
 # ======== Predator properties ========
 PRED_RAD = 10
-PRED_TRANS = .9
-PRED_PN = 5
-PRED_MAX_VEL = 1
+PRED_TRANS = 1.9
+PRED_PN = 10
+PRED_MAX_VEL = 5
 
 # ======== Agent properties ===========
-NUM_AGENTS = 30
+NUM_AGENTS = 20
 AGENT_WIDTH = 5
 AGENT_MAX_VEL = 1
 SENSOR_VAR = 10
 INIT_GUESS = np.array([0, 0])
 ROUNDS = 10
+COM_GRAPH = np.zeros([NUM_AGENTS, NUM_AGENTS])
 
 R = 100
 D = 20
@@ -110,20 +111,17 @@ def getNeighbors(i):
     for c in candidates:
         if np.linalg.norm(agents[c].pos - agents[i].pos) < R:
             res.append(c)
+            COM_GRAPH[i, c] = -1
+            COM_GRAPH[c, i] = -1
 
     agents[i].neighbors = res
 
 
 def findPredator(i, obs):
+    # Only agents within the range receive an observation
     if np.linalg.norm(predator.pos - agents[i].pos) < DO:
-        # Only agents within the range receive an observation
         estimated_pos = (A - B.dot(L[i]) - K[i].dot(A) + K[i].dot(B.dot(L[i]))).dot(agents[i].estimate) + K[i].dot(obs)
         agents[i].estimate = estimated_pos
-        if np.linalg.norm(agents[i].estimate - agents[i].pos) < DO:
-            agents[i].obstacle = agents[i].estimate
-        else:
-            agents[i].obstacle = None
-
 
 # ============= Main code =============
 
@@ -136,13 +134,13 @@ plt.ion()
 plt.show()
 
 # Predator's cost function
-Qx = np.array([[.001, 0], [0, .001]])
+Qx = np.array([[0.001, 0], [0, 0.001]])
 Qu = np.array([[1, 0], [0, 1]])
-QT = np.array([[0.0001, 0], [0, 0.0001]])
+QT = np.array([[0.001, 0], [0, 0.001]])
 
 # Predator's control:
-S = np.zeros([TIME_STEPS+1, 2, 2])
-L = np.zeros([TIME_STEPS+1, 2, 2])
+S = np.zeros([TIME_STEPS + 1, 2, 2])
+L = np.zeros([TIME_STEPS + 1, 2, 2])
 S[TIME_STEPS] = QT
 A = PRED_TRANS * np.eye(2)
 B = np.eye(2)
@@ -176,14 +174,35 @@ for t in range(TIME_STEPS):
     for i in range(NUM_AGENTS):
         agents[i].step(actions[i])
 
-    obs = predator.step(-L[k].dot(predator.pos))
+    obs = predator.step(-L[t].dot(predator.pos))
     target.step(np.array([TARGET_MAX_VEL, -TARGET_MAX_VEL]), BKG_SCALE)
 
-    actions = []
+    # Individual measurements
+    COM_GRAPH = np.zeros([NUM_AGENTS, NUM_AGENTS])
     for i in range(NUM_AGENTS):
         getNeighbors(i)
         findPredator(i, obs)
 
+    # We need a graph that is irreducible (ensures connectivity), aperiodic (a limit exists), and doubly stochastic (consensus)
+    laplacian = COM_GRAPH - np.sum(COM_GRAPH, axis=1) * np.eye(NUM_AGENTS)
+    epsilon = .9 * 1 / max(np.diag(laplacian))
+    COM_GRAPH = np.eye(NUM_AGENTS) - epsilon * laplacian
+
+    # Collective estimation
+    for _ in range(ROUNDS):
+        Collective = []
+        for i in range(NUM_AGENTS):
+            Collective.append(np.sum([COM_GRAPH[i, j] * agents[j].estimate for j in range(NUM_AGENTS)], axis=0))
+
+        for i in range(NUM_AGENTS):
+            agents[i].estimate = Collective[i]
+            if np.linalg.norm(agents[i].estimate - agents[i].pos) < DO:
+                agents[i].obstacle = agents[i].estimate
+            else:
+                agents[i].obstacle = None
+
+    actions = []
+    for i in range(NUM_AGENTS):
         fg = C1 * sum([phiFunc(j, i) * (agents[j].pos - agents[i].pos) / np.sqrt(
             1 + E * np.linalg.norm(agents[j].pos - agents[i].pos) ** 2) + bumpfunc(
             signorm(agents[j].pos - agents[i].pos) / signorm(R)) * (agents[j].vel - agents[i].vel) for j in
@@ -201,15 +220,5 @@ for t in range(TIME_STEPS):
         ft = - C1T * (agents[i].pos - target.pos) - C2T * (TARGET_MAX_VEL - agents[i].vel)
 
         actions.append(fg + fo + fd + ft)
-
-    for _ in range(ROUNDS):
-        Collective = []
-        for i in range(NUM_AGENTS):
-            # Who is storing the matrix of weights
-            # Collective.append(np.sum([COMM[i, j] * agents[j].estimate for j in range(NUM_AGENTS)], axis=0))
-            Collective.append(np.sum([(1/NUM_AGENTS) * agents[j].estimate for j in range(NUM_AGENTS)], axis=0))
-
-        for i in range(NUM_AGENTS):
-            agents[i].estimate = Collective[i]
 
     plt.pause(0.1)
