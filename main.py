@@ -1,10 +1,6 @@
-import sys
-import argparse
-import numpy as np
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from matplotlib.patches import Circle, Rectangle, Arrow
+from matplotlib.patches import Circle, Arrow
 from agents import *
 
 VIS = True
@@ -12,8 +8,8 @@ VIS = True
 # ======== Predator properties ========
 PRED_RAD = 10
 PRED_TRANS = 1.9
-PRED_PN = 50
-PRED_MAX_VEL = 5
+PRED_PN = 20
+PRED_MAX_VEL = PRED_PN
 
 # Predator's cost function
 Qx = np.array([[0.001, 0], [0, 0.001]])
@@ -21,22 +17,31 @@ Qu = np.array([[100, 0], [0, 100]])
 QT = np.array([[0.001, 0], [0, 0.001]])
 
 # ======== Agent properties ===========
-NUM_AGENTS = 5
+NUM_AGENTS = 20
 AGENT_WIDTH = 5
 AGENT_MAX_VEL = 1
 SENSOR_VAR = 10
 INIT_GUESS = np.array([0, 0])
-ROUNDS = 1
 COM_GRAPH = np.zeros([NUM_AGENTS, NUM_AGENTS])
+COM_REACH = .8
+ROUNDS = 1
 
+# RN and COM_REACH
+# E1: RN=500, REACH=.8 (h SC)
+# E2: RN=100, REACH=.8 (m SC)
+# E3: RN=60, REACH=.8 (l SC)
+# E4: RN=60, REACH=.8, R=20 (m SC w cons)
 # ======= Flocking control params =====
-RD = 200
-RC = 50
-RP = 300
+RN = 100
+RD = 50
+RP = 150
 RDP = 100
+RC = RD + (RN - RD)*COM_REACH
+
+TEST_ID = f"ignore_me"
 
 E = 0.9
-K1 = 10.
+K1 = 5.
 K2 = .1
 K3 = 10.
 K4 = .1
@@ -49,12 +54,12 @@ BKG_SCALE = 400
 TARGET_MAX_VEL = 5
 
 # =========== Statistics ==============
-messages = np.zeros([TIME_STEPS-1, NUM_AGENTS])
-dist2neighbors = np.zeros([TIME_STEPS-1, NUM_AGENTS])
-dist2target = np.zeros([TIME_STEPS-1, NUM_AGENTS])
-dist2obstacle = np.zeros([TIME_STEPS-1, NUM_AGENTS])
-abs_error = np.zeros([TIME_STEPS-1, NUM_AGENTS, 2])
-disconnections = np.zeros(TIME_STEPS-1)
+messages = np.zeros([TIME_STEPS, NUM_AGENTS])
+dist2neighbors = np.zeros([TIME_STEPS, NUM_AGENTS])
+dist2target = np.zeros([TIME_STEPS, NUM_AGENTS])
+dist2obstacle = np.zeros([TIME_STEPS, NUM_AGENTS])
+abs_error = np.zeros([TIME_STEPS, NUM_AGENTS, 2])
+disconnections = np.zeros(TIME_STEPS)
 
 
 def preparing_workspace():
@@ -68,18 +73,16 @@ def preparing_workspace():
 def animate(i):
     ax.clear()
     plt.axis([-BKG_SCALE, BKG_SCALE, -BKG_SCALE, BKG_SCALE])
-    # ax.add_patch(Rectangle(target.pos, 10, 10, color="golden"))
     ax.add_patch(Arrow(target.pos[0], target.pos[1], 20, -20, width=50, color="gold"))
     for agent in agents:
         # shape = Arrow(agent.pos[0], agent.pos[1], agent.vel[0], agent.vel[1], width=AGENT_WIDTH, color="royalblue")
         # ax.add_patch(shape)
         ax.plot(agent.pos[0], agent.pos[1], '.', color='olivedrab')
-        for id in agent.neighbors:
-            plt.plot([agent.pos[0], agents[id].pos[0]], [agent.pos[1], agents[id].pos[1]], color='black', linewidth=0.1)
+        for id in agent.connected:
+            plt.plot([agent.pos[0], agents[id].pos[0]], [agent.pos[1], agents[id].pos[1]], 'k--', linewidth=0.1)
 
         if agent.obstacle is not None:
-            plt.plot([agent.pos[0], agent.obstacle[0]], [agent.pos[1], agent.obstacle[1]], color='blue',
-                     linewidth=0.1)
+            plt.plot([agent.pos[0], agent.obstacle[0]], [agent.pos[1], agent.obstacle[1]], 'r--',linewidth=0.1)
 
     shape = Circle((predator.pos[0], predator.pos[1]), radius=PRED_RAD, color="crimson")
     ax.add_patch(shape)
@@ -113,7 +116,7 @@ def phi(z):
 
 def phiAlpha(j, i):
     z = signorm(agents[j].pos - agents[i].pos)
-    return bumpfunc(z / signorm(RD)) * phi(z - signorm(RC))
+    return bumpfunc(z / signorm(RN)) * phi(z - signorm(RD))
 
 
 def phiBeta(pos, i):
@@ -125,19 +128,22 @@ def getNeighbors(i):
     # Sensing devices within rad R
     candidates = [id for id in range(NUM_AGENTS) if id != i]
     res = []
+    res_conn = []
     for c in candidates:
-        if np.linalg.norm(agents[c].pos - agents[i].pos) < RD:
+        if np.linalg.norm(agents[c].pos - agents[i].pos) <= RN:
             res.append(c)
-            if np.linalg.norm(agents[c].pos - agents[i].pos) < RC:
+            if np.linalg.norm(agents[c].pos - agents[i].pos) <= RC:
+                res_conn.append(c)
                 COM_GRAPH[i, c] = -1
                 COM_GRAPH[c, i] = -1
 
     agents[i].neighbors = res
+    agents[i].connected = res_conn
 
 
 def findPredator(i, obs):
     # Only agents within the range receive an observation
-    if np.linalg.norm(predator.pos - agents[i].pos) < RP:
+    if np.linalg.norm(predator.pos - agents[i].pos) <= RP:
         estimated_pos = (A - B.dot(L[i]) - K[i].dot(A) + K[i].dot(B.dot(L[i]))).dot(agents[i].estimate) + K[i].dot(obs)
         agents[i].estimate = estimated_pos
 
@@ -181,7 +187,7 @@ for i in range(NUM_AGENTS):
     findPredator(i, pred_pos0)
 
 actions = [np.zeros(2) for _ in range(NUM_AGENTS)]
-for t in range(TIME_STEPS-1):
+for t in range(TIME_STEPS):
     if VIS:
         anim = animation.FuncAnimation(fig, animate, interval=1, blit=True)
 
@@ -195,11 +201,10 @@ for t in range(TIME_STEPS-1):
     dist2neighbors[t] = np.array([np.mean([np.linalg.norm(agents[i].pos - agents[id].pos) for id in agents[i].neighbors]) if len(agents[i].neighbors)!=0 else 0 for i in range(NUM_AGENTS)])
 
     # Measuring avg MSE in estimated position of obstacle
-    abs_error[t] = np.array([np.abs(agents[i].estimate - predator.pos) for i in range(NUM_AGENTS)])
+    abs_error[t] = np.array([(agents[i].estimate - predator.pos)**2 for i in range(NUM_AGENTS)])
 
     for i in range(NUM_AGENTS):
         agents[i].step(actions[i])
-        print(agents[i].pos)
 
     obs = predator.step(-L[t].dot(predator.pos))
     target.step(np.array([TARGET_MAX_VEL, -TARGET_MAX_VEL]), BKG_SCALE)
@@ -227,18 +232,18 @@ for t in range(TIME_STEPS-1):
             messages[t, i] += len(COM_GRAPH[i, :][COM_GRAPH[i, :] > 0])
             Collective.append(np.sum([COM_GRAPH[i, j] * agents[j].estimate for j in range(NUM_AGENTS)], axis=0))
 
-        for i in range(NUM_AGENTS):
-            agents[i].estimate = Collective[i]
-            if np.linalg.norm(agents[i].estimate - agents[i].pos) < RP:
-                agents[i].obstacle = agents[i].estimate
-            else:
-                agents[i].obstacle = None
-
     actions = []
     for i in range(NUM_AGENTS):
+
+        agents[i].estimate = Collective[i]
+        if np.linalg.norm(agents[i].estimate - agents[i].pos) < RP:
+            agents[i].obstacle = agents[i].estimate
+        else:
+            agents[i].obstacle = None
+
         fc = K1 * sum([phiAlpha(j, i) * (agents[j].pos - agents[i].pos) / np.sqrt(
             1 + E * np.linalg.norm(agents[j].pos - agents[i].pos) ** 2) + bumpfunc(
-            signorm(agents[j].pos - agents[i].pos) / signorm(RD)) * (agents[j].vel - agents[i].vel) for j in
+            signorm(agents[j].pos - agents[i].pos) / signorm(RN)) * (agents[j].vel - agents[i].vel) for j in
                        agents[i].neighbors])
 
         fg = - K2 * ((agents[i].pos - target.pos) + (agents[i].vel - TARGET_MAX_VEL))
@@ -250,15 +255,21 @@ for t in range(TIME_STEPS-1):
             signorm(agents[i].obstacle[0] - agents[i].pos) / signorm(RDP)) * (PRED_MAX_VEL - agents[i].vel)
 
         fv = K4 * sum(
-            [bumpfunc(signorm(agents[j].pos - agents[i].pos) / signorm(RD)) * (agents[j].vel - agents[i].vel) for j in
+            [bumpfunc(signorm(agents[j].pos - agents[i].pos) / signorm(RN)) * (agents[j].vel - agents[i].vel) for j in
              agents[i].neighbors])
 
         actions.append(fc + fg + fo + fv)
 
     plt.pause(0.001)
 
+np.save(f'Stats/messages_{TEST_ID}.npy', messages)
+np.save(f'Stats/dist2neighbors_{TEST_ID}.npy', dist2neighbors)
+np.save(f'Stats/dist2target_{TEST_ID}.npy', dist2target)
+np.save(f'Stats/dist2obstacle_{TEST_ID}.npy', dist2obstacle)
+np.save(f'Stats/abs_error_{TEST_ID}.npy', abs_error)
+np.save(f'Stats/disconnections_{TEST_ID}.npy', disconnections)
 
-stamps = np.arange(TIME_STEPS-1)
+stamps = np.arange(TIME_STEPS)
 
 plt.close()
 plt.figure()
@@ -312,10 +323,8 @@ std_MSE_x = 2*np.std(abs_error[:, :, 0], axis=1)
 mean_MSE_y = np.mean(abs_error[:, :, 1], axis=1)
 std_MSE_y = 2*np.std(abs_error[:, :, 1], axis=1)
 plt.figure()
-plt.fill_between(stamps, mean_MSE_x + std_MSE_x, mean_MSE_x - std_MSE_x, color='grey', alpha=0.5, label='CI (x)')
-plt.plot(stamps, mean_MSE_x, label='mean (x)', color='midnightblue')
-plt.fill_between(stamps, mean_MSE_y + std_MSE_y, mean_MSE_y - std_MSE_y, color='yellow', alpha=0.5, label='CI (y)')
-plt.plot(stamps, mean_MSE_y, label='mean (y)', color='orange')
+plt.fill_between(stamps[:-2], mean_MSE_x[:-2] + std_MSE_x[:-2], mean_MSE_x[:-2] - std_MSE_x[:-2], color='grey', alpha=0.5, label='CI (x)')
+plt.plot(stamps[:-2], mean_MSE_x[:-2], label='mean (x)', color='midnightblue')
 plt.ylabel('Absolute error')
 plt.xlabel('time stamps')
 plt.legend()

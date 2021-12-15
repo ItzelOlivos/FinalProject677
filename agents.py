@@ -6,6 +6,7 @@ class Agent:
         self.pos = pos0
         self.vel = vel0
         self.neighbors = []
+        self.connected = []
         self.obstacle = None
         self.max_speed = max_speed
         self.estimate = init_guess
